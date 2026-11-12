@@ -364,6 +364,81 @@ def print_signin_stats(stats, account_name):
     print(f"平均每日鸡腿: {stats['average']} 个")
     
 
+# ---------------- 今日所得与当前余额（供TG推送展示） ----------------
+def get_today_and_balance(ns_cookie):
+    """查询今日签到所得与当前鸡腿余额，返回 (今日所得或None, 当前余额或None)。
+    信用流水记录格式: [amount, balance, description, timestamp]，按时间倒序；
+    第一条流水的 balance 即当前余额，今日「签到收益」流水的 amount 之和即今日所得。"""
+    if not ns_cookie:
+        return None, None
+    headers = {
+        'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
+        'origin': "https://www.nodeseek.com",
+        'referer': "https://www.nodeseek.com/board",
+        'Cookie': ns_cookie
+    }
+    shanghai_tz = ZoneInfo("Asia/Shanghai")
+    today_str = datetime.now(shanghai_tz).strftime('%Y-%m-%d')
+    balance = None
+    today_amount = None
+    try:
+        for page in range(1, 4):
+            url = f"https://www.nodeseek.com/api/account/credit/page-{page}"
+            response = requests.get(url, headers=headers, impersonate="chrome110")
+            data = response.json()
+            if not data.get("success") or not data.get("data"):
+                break
+            records = data.get("data", [])
+            if not records:
+                break
+            if page == 1:
+                balance = records[0][1]
+            stop = False
+            for record in records:
+                amount, bal, description, timestamp = record
+                rt = datetime.fromisoformat(timestamp.replace('Z', '+00:00')).astimezone(shanghai_tz)
+                if rt.strftime('%Y-%m-%d') == today_str and "签到收益" in description:
+                    today_amount = (today_amount or 0) + amount
+                if rt.strftime('%Y-%m-%d') < today_str:
+                    stop = True
+            if stop:
+                break
+            time.sleep(0.5)
+    except Exception as e:
+        print(f"查询今日所得/余额异常: {e}")
+    return today_amount, balance
+
+
+def write_status(today_amount, balance):
+    """把今日所得与当前余额写入 checkin_status.json，供每日 TG 核查读取展示。
+    同一天重复运行时，本次数值缺失则保留当天先前已记录的数值。"""
+    status_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkin_status.json")
+    shanghai_tz = ZoneInfo("Asia/Shanghai")
+    today_str = datetime.now(shanghai_tz).strftime('%Y-%m-%d')
+    prev = {}
+    try:
+        if os.path.exists(status_path):
+            with open(status_path, encoding="utf-8") as f:
+                prev = json.load(f)
+    except Exception:
+        prev = {}
+    if today_amount is None and prev.get("date") == today_str:
+        today_amount = prev.get("today")
+    if balance is None and prev.get("date") == today_str:
+        balance = prev.get("balance")
+    data = {
+        "site": "nodeseek",
+        "date": today_str,
+        "today": today_amount,
+        "balance": balance,
+        "unit": "鸡腿",
+        "updated_at": datetime.now(shanghai_tz).isoformat(timespec="seconds"),
+    }
+    with open(status_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"状态文件已更新：今日所得 {today_amount}，当前余额 {balance}")
+
+
 # ---------------- 主流程 ----------------
 if __name__ == "__main__":
     solver_type = os.getenv("SOLVER_TYPE", "turnstile")
@@ -438,6 +513,12 @@ if __name__ == "__main__":
                 print_signin_stats(stats, display_user)
             else:
                 print(f"统计查询失败: {stats_msg}")
+
+            try:
+                t_amt, t_bal = get_today_and_balance(cookie)
+                write_status(t_amt, t_bal)
+            except Exception as e:
+                print(f"写状态文件异常（不影响签到结果）: {e}")
             
             if hadsend:
                 try:
@@ -466,6 +547,12 @@ if __name__ == "__main__":
                             print_signin_stats(stats, display_user)
                         else:
                             print(f"统计查询失败: {stats_msg}")
+
+                        try:
+                            t_amt, t_bal = get_today_and_balance(new_cookie)
+                            write_status(t_amt, t_bal)
+                        except Exception as e:
+                            print(f"写状态文件异常（不影响签到结果）: {e}")
                         
                         cookie_list[i] = new_cookie
                         
