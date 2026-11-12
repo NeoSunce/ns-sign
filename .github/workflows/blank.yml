@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write  # 允许把签到数值状态文件 checkin_status.json 提交回仓库
   actions: write  # 添加写入Actions变量的权限
 
 jobs:
@@ -67,3 +67,13 @@ jobs:
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
           TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
         run: python nodeseek_sign.py
+
+      - name: 提交签到数值状态文件
+        if: success()
+        run: |
+          if [ -f checkin_status.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add checkin_status.json
+            git diff --cached --quiet || (git commit -m "chore: update checkin status" && git push)
+          fi
